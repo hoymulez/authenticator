@@ -3,11 +3,13 @@ import 'package:flutter/services.dart';
 import 'router.dart';
 import 'screens/onboarding_screen.dart';
 import 'screens/pin_screen.dart';
+import 'screens/unlock_screen.dart';
 import 'screens/vault_screen.dart';
 import 'state/app_controller.dart';
 import 'state/ticker.dart';
 import 'theme/app_theme.dart';
 import 'widgets/app_scope.dart';
+import 'widgets/gradient_scaffold.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -50,7 +52,7 @@ class _BitanonAppState extends State<BitanonApp> {
             title: 'Bitanon Authenticator',
             debugShowCheckedModeBanner: false,
             theme: _materialTheme(theme),
-            home: const _SetupFlow(),
+            home: const _Bootstrap(),
           ),
         );
       },
@@ -74,7 +76,46 @@ class _BitanonAppState extends State<BitanonApp> {
   }
 }
 
-/// First-run flow: Onboarding → Create PIN → Confirm PIN → Vault.
+/// Decides the first screen: Unlock (vault exists) vs Onboarding (first run).
+class _Bootstrap extends StatefulWidget {
+  const _Bootstrap();
+
+  @override
+  State<_Bootstrap> createState() => _BootstrapState();
+}
+
+class _BootstrapState extends State<_Bootstrap> {
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) => _decide());
+  }
+
+  Future<void> _decide() async {
+    final app = AppScope.appOf(context);
+    await app.init();
+    if (!mounted) return;
+    final next = app.hasVault ? const UnlockScreen() : const _SetupFlow();
+    Navigator.pushReplacement(context, appRoute(next));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = AppScope.themeOf(context);
+    return GradientScaffold(
+      theme: theme,
+      child: Center(
+        child: SizedBox(
+          width: 30,
+          height: 30,
+          child: CircularProgressIndicator(strokeWidth: 2.4, color: theme.accent),
+        ),
+      ),
+    );
+  }
+}
+
+/// First-run flow: Onboarding → Create PIN → Confirm PIN → create vault → Vault.
 class _SetupFlow extends StatelessWidget {
   const _SetupFlow();
 
@@ -93,8 +134,8 @@ class _CreatePin extends StatelessWidget {
   Widget build(BuildContext context) {
     return PinScreen(
       mode: PinMode.create,
-      onComplete: (_) {
-        Navigator.push(context, appRoute(const _ConfirmPin()));
+      onComplete: (pin) async {
+        Navigator.push(context, appRoute(_ConfirmPin(firstPin: pin)));
         return true;
       },
     );
@@ -102,14 +143,20 @@ class _CreatePin extends StatelessWidget {
 }
 
 class _ConfirmPin extends StatelessWidget {
-  const _ConfirmPin();
+  final String firstPin;
+  const _ConfirmPin({required this.firstPin});
 
   @override
   Widget build(BuildContext context) {
     return PinScreen(
       mode: PinMode.confirm,
-      onComplete: (_) {
-        Navigator.pushAndRemoveUntil(context, appRoute(const VaultScreen()), (r) => false);
+      onCancel: () => Navigator.pop(context),
+      onComplete: (pin) async {
+        if (pin != firstPin) return false;
+        await AppScope.appOf(context).createVault(pin);
+        if (context.mounted) {
+          Navigator.pushAndRemoveUntil(context, appRoute(const VaultScreen()), (r) => false);
+        }
         return true;
       },
     );

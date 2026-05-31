@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../models/account.dart';
+import '../services/otpauth.dart';
 import '../services/totp.dart';
 import '../state/ticker.dart';
 import '../theme/app_theme.dart';
@@ -31,9 +32,33 @@ class _ManualAddScreenState extends State<ManualAddScreen> {
   @override
   void initState() {
     super.initState();
-    for (final c in [_issuer, _label, _secret]) {
-      c.addListener(() => setState(() {}));
+    _issuer.addListener(() => setState(() {}));
+    _label.addListener(() => setState(() {}));
+    _secret.addListener(_onSecretChanged);
+  }
+
+  /// If an otpauth:// URL is pasted into the secret field, parse it and
+  /// populate every field automatically.
+  void _onSecretChanged() {
+    final text = _secret.text.trim();
+    if (text.toLowerCase().startsWith('otpauth://')) {
+      final acct = OtpAuth.parse(text);
+      if (acct != null) {
+        _secret.removeListener(_onSecretChanged);
+        setState(() {
+          _issuer.text = acct.issuer;
+          _label.text = acct.label;
+          _secret.text = acct.secret;
+          _digits = acct.digits;
+          _period = acct.period;
+          _alg = acct.algorithm;
+          _adv = acct.digits != 6 || acct.period != 30 || acct.algorithm != 'SHA-1';
+        });
+        _secret.addListener(_onSecretChanged);
+        return;
+      }
     }
+    setState(() {});
   }
 
   @override
@@ -44,7 +69,8 @@ class _ManualAddScreenState extends State<ManualAddScreen> {
     super.dispose();
   }
 
-  bool get _valid => _secret.text.trim().length >= 8 && _issuer.text.trim().isNotEmpty;
+  bool get _valid =>
+      _issuer.text.trim().isNotEmpty && Totp.isValidSecret(_secret.text);
 
   void _add(AppTheme theme) {
     final app = AppScope.appOf(context);
@@ -53,9 +79,9 @@ class _ManualAddScreenState extends State<ManualAddScreen> {
       id: 'm${DateTime.now().millisecondsSinceEpoch}',
       issuer: issuer,
       label: _label.text.trim().isEmpty ? issuer : _label.text.trim(),
-      secret: _secret.text.replaceAll(RegExp(r'\s'), ''),
+      secret: _secret.text.replaceAll(RegExp(r'\s'), '').toUpperCase(),
       logo: issuer.toLowerCase(),
-      color: theme.accent,
+      color: OtpAuth.colorForIssuer(issuer),
       period: _period,
       digits: _digits,
       algorithm: _alg,
@@ -148,7 +174,7 @@ class _ManualAddScreenState extends State<ManualAddScreen> {
                 ValueListenableBuilder<int>(
                   valueListenable: appTick,
                   builder: (context, _, _) => Text(
-                    valid ? Totp.format(Totp.preview(_secret.text, _period, _digits)) : '••• •••',
+                    valid ? Totp.format(Totp.preview(_secret.text, _period, _digits, _alg)) : '••• •••',
                     style: theme.mono(
                       size: 30,
                       weight: FontWeight.w700,

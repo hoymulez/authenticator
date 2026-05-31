@@ -1,14 +1,13 @@
-import 'dart:async';
 import 'package:flutter/material.dart';
-import '../data/seed_data.dart';
 import '../models/account.dart';
+import '../services/otpauth.dart';
 import '../theme/app_theme.dart';
 import '../widgets/app_icons.dart';
 import '../widgets/app_scope.dart';
 import '../widgets/brand_tile.dart';
 import '../widgets/buttons.dart';
-import '../widgets/camera_view.dart';
 import '../widgets/gradient_scaffold.dart';
+import '../widgets/scanner_view.dart';
 import '../widgets/screen_header.dart';
 import '../widgets/toast.dart';
 
@@ -21,25 +20,18 @@ class ScanScreen extends StatefulWidget {
 
 class _ScanScreenState extends State<ScanScreen> {
   Account? _found;
-  Timer? _timer;
 
-  @override
-  void initState() {
-    super.initState();
-    _timer = Timer(const Duration(milliseconds: 2600), () {
-      if (mounted) setState(() => _found = kScanResult);
-    });
-  }
-
-  @override
-  void dispose() {
-    _timer?.cancel();
-    super.dispose();
+  void _onCode(String raw) {
+    if (_found != null) return;
+    final acct = OtpAuth.parse(raw);
+    if (acct != null) {
+      setState(() => _found = acct);
+    }
+    // Non-otpauth codes are ignored; the scanner keeps looking.
   }
 
   void _add(AppTheme theme) {
-    final app = AppScope.appOf(context);
-    app.addAccount(_found!);
+    AppScope.appOf(context).addAccount(_found!);
     Navigator.popUntil(context, (r) => r.isFirst);
     showAppToast(context, theme, '${_found!.issuer} added');
   }
@@ -57,11 +49,13 @@ class _ScanScreenState extends State<ScanScreen> {
             child: ListView(
               padding: const EdgeInsets.fromLTRB(18, 6, 18, 30),
               children: [
-                CameraView(theme: theme, scanning: found == null),
+                if (found == null)
+                  ScannerView(theme: theme, onCode: _onCode)
+                else
+                  _DetectedPreview(theme: theme, account: found),
                 const SizedBox(height: 18),
                 Text(found != null ? 'Code detected' : 'Point at the QR code',
-                    textAlign: TextAlign.center,
-                    style: theme.ui(size: 16, weight: FontWeight.w600)),
+                    textAlign: TextAlign.center, style: theme.ui(size: 16, weight: FontWeight.w600)),
                 const SizedBox(height: 4),
                 Text(
                   found != null
@@ -71,14 +65,14 @@ class _ScanScreenState extends State<ScanScreen> {
                   style: theme.ui(size: 13.5, weight: FontWeight.w400, color: theme.dim),
                 ),
                 const SizedBox(height: 18),
-                if (found != null)
-                  _detectedCard(theme, found)
-                else
+                if (found != null) ...[
+                  _detectedCard(theme, found),
+                ] else
                   GhostButton(
                     theme: theme,
-                    icon: 'image',
-                    label: 'Choose from photos',
-                    onPressed: () => showAppToast(context, theme, 'Pick a QR image from Photos'),
+                    icon: 'edit',
+                    label: 'Enter manually instead',
+                    onPressed: () => Navigator.pop(context),
                   ),
               ],
             ),
@@ -116,8 +110,46 @@ class _ScanScreenState extends State<ScanScreen> {
           ),
         ),
         const SizedBox(height: 12),
-        PrimaryButton(theme: theme, icon: 'plus', label: 'Add account', onPressed: () => _add(theme)),
+        Row(
+          children: [
+            Expanded(
+              child: GhostButton(
+                theme: theme,
+                icon: 'x',
+                label: 'Rescan',
+                onPressed: () => setState(() => _found = null),
+              ),
+            ),
+            const SizedBox(width: 11),
+            Expanded(
+              flex: 2,
+              child: PrimaryButton(theme: theme, icon: 'plus', label: 'Add account', onPressed: () => _add(theme)),
+            ),
+          ],
+        ),
       ],
+    );
+  }
+}
+
+/// A neutral placeholder shown in the camera slot once a code is captured.
+class _DetectedPreview extends StatelessWidget {
+  final AppTheme theme;
+  final Account account;
+  const _DetectedPreview({required this.theme, required this.account});
+
+  @override
+  Widget build(BuildContext context) {
+    return AspectRatio(
+      aspectRatio: 1,
+      child: Container(
+        decoration: BoxDecoration(
+          color: theme.accentSoft,
+          borderRadius: BorderRadius.circular(theme.radius),
+        ),
+        alignment: Alignment.center,
+        child: AppIcon('checkCircle', size: 64, color: theme.accent),
+      ),
     );
   }
 }

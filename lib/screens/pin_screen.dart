@@ -10,8 +10,8 @@ enum PinMode { unlock, create, confirm }
 class PinScreen extends StatefulWidget {
   final PinMode mode;
 
-  /// Return false to trigger an error shake; anything else accepts the PIN.
-  final bool? Function(String pin) onComplete;
+  /// Return false to trigger an error shake; true accepts the PIN.
+  final Future<bool> Function(String pin) onComplete;
   final VoidCallback? onBiometric;
   final VoidCallback? onCancel;
 
@@ -30,6 +30,7 @@ class PinScreen extends StatefulWidget {
 class _PinScreenState extends State<PinScreen> with SingleTickerProviderStateMixin {
   String _pin = '';
   bool _error = false;
+  bool _checking = false;
   late final AnimationController _shake =
       AnimationController(vsync: this, duration: const Duration(milliseconds: 400));
 
@@ -46,13 +47,16 @@ class _PinScreenState extends State<PinScreen> with SingleTickerProviderStateMix
   }
 
   void _digit(String d) {
-    if (_pin.length >= 6 || _error) return;
+    if (_pin.length >= 6 || _error || _checking) return;
     setState(() => _pin += d);
     if (_pin.length == 6) {
-      Future.delayed(const Duration(milliseconds: 140), () {
+      _checking = true;
+      Future.delayed(const Duration(milliseconds: 140), () async {
         if (!mounted) return;
-        final ok = widget.onComplete(_pin);
-        if (ok == false) {
+        final ok = await widget.onComplete(_pin);
+        _checking = false;
+        if (!mounted) return;
+        if (!ok) {
           setState(() => _error = true);
           _shake.forward(from: 0);
           Future.delayed(const Duration(milliseconds: 500), () {

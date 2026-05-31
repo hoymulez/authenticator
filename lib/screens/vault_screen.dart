@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import '../models/account.dart';
 import '../router.dart';
+import '../services/drive_backup.dart';
 import '../state/app_controller.dart';
 import '../theme/app_theme.dart';
 import '../widgets/app_icons.dart';
@@ -35,6 +36,14 @@ class _VaultScreenState extends State<VaultScreen> {
   void initState() {
     super.initState();
     _searchFocus.addListener(() => setState(() {}));
+    WidgetsBinding.instance.addPostFrameCallback((_) => _reflectDriveState());
+  }
+
+  Future<void> _reflectDriveState() async {
+    final app = AppScope.appOf(context);
+    if (app.driveConnected) return;
+    final acc = await DriveBackup.instance.trySilent();
+    if (acc != null && mounted) app.setDriveConnected(true, email: acc.email);
   }
 
   @override
@@ -128,14 +137,24 @@ class _VaultScreenState extends State<VaultScreen> {
     );
   }
 
-  void _onCloud(AppController app, AppTheme theme) {
+  Future<void> _onCloud(AppController app, AppTheme theme) async {
     if (!app.driveConnected) {
       Navigator.push(context, appRoute(const DriveScreen()));
       return;
     }
-    app.sync(onComplete: () {
+    if (app.syncStatus == SyncStatus.syncing) return;
+    final blob = app.exportEncrypted();
+    if (blob == null) return;
+    app.setSyncStatus(SyncStatus.syncing);
+    try {
+      await DriveBackup.instance.upload(blob);
+      app.markBackedUp();
+      app.setSyncStatus(SyncStatus.synced);
       if (mounted) showAppToast(context, theme, 'Synced to Google Drive');
-    });
+    } catch (_) {
+      app.setSyncStatus(SyncStatus.offline);
+      if (mounted) showAppToast(context, theme, 'Sync failed');
+    }
   }
 
   @override
@@ -199,6 +218,9 @@ class _VaultScreenState extends State<VaultScreen> {
       icon = 'refresh';
       color = theme.accent;
       spinning = true;
+    } else if (app.syncStatus == SyncStatus.offline) {
+      icon = 'cloud';
+      color = AppTheme.danger;
     } else {
       icon = 'cloudCheck';
       color = AppTheme.success;

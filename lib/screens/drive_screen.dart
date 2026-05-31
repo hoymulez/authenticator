@@ -1,10 +1,13 @@
 import 'package:flutter/material.dart';
+import '../services/drive_backup.dart';
+import '../state/app_controller.dart';
 import '../theme/app_theme.dart';
 import '../widgets/app_icons.dart';
 import '../widgets/app_scope.dart';
 import '../widgets/buttons.dart';
 import '../widgets/gradient_scaffold.dart';
 import '../widgets/meta_row.dart';
+import '../widgets/pin_prompt.dart';
 import '../widgets/screen_header.dart';
 import '../widgets/toast.dart';
 
@@ -20,21 +23,105 @@ enum _Phase { idle, running, done }
 class _DriveScreenState extends State<DriveScreen> {
   bool _auto = true;
   _Phase _phase = _Phase.idle;
-  String _last = 'Today, 9:32 AM';
+  bool _busy = false;
 
-  void _backup(AppTheme theme) {
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) => _silentSignIn());
+  }
+
+  Future<void> _silentSignIn() async {
+    final app = AppScope.appOf(context);
+    if (app.driveConnected) return;
+    final acc = await DriveBackup.instance.trySilent();
+    if (acc != null && mounted) app.setDriveConnected(true, email: acc.email);
+  }
+
+  String _fmtTime(DateTime? t) {
+    if (t == null) return 'Never';
+    final now = DateTime.now();
+    if (now.difference(t).inMinutes < 1) return 'Just now';
+    final h = t.hour % 12 == 0 ? 12 : t.hour % 12;
+    final m = t.minute.toString().padLeft(2, '0');
+    final ap = t.hour < 12 ? 'AM' : 'PM';
+    return 'Today, $h:$m $ap';
+  }
+
+  Future<void> _connect(AppTheme theme, AppController app) async {
+    setState(() => _busy = true);
+    try {
+      final acc = await DriveBackup.instance.connect();
+      app.setDriveConnected(true, email: acc.email);
+      // First backup right away.
+      final blob = app.exportEncrypted();
+      if (blob != null) {
+        await DriveBackup.instance.upload(blob);
+        app.markBackedUp();
+      }
+      if (mounted) showAppToast(context, theme, 'Google Drive connected');
+    } on UnsupportedError {
+      if (mounted) showAppToast(context, theme, 'Sign-in not supported on this platform');
+    } catch (_) {
+      if (mounted) showAppToast(context, theme, 'Could not connect to Drive');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _backupNow(AppTheme theme, AppController app) async {
+    final blob = app.exportEncrypted();
+    if (blob == null) return;
     setState(() => _phase = _Phase.running);
-    Future.delayed(const Duration(milliseconds: 1900), () {
-      if (!mounted) return;
-      setState(() {
-        _phase = _Phase.done;
-        _last = 'Just now';
-      });
-      showAppToast(context, theme, 'Backup complete');
-      Future.delayed(const Duration(milliseconds: 1600), () {
-        if (mounted) setState(() => _phase = _Phase.idle);
-      });
-    });
+    try {
+      await DriveBackup.instance.upload(blob);
+      app.markBackedUp();
+      if (mounted) {
+        setState(() => _phase = _Phase.done);
+        showAppToast(context, theme, 'Backup complete');
+        Future.delayed(const Duration(milliseconds: 1600), () {
+          if (mounted) setState(() => _phase = _Phase.idle);
+        });
+      }
+    } catch (_) {
+      if (mounted) {
+        setState(() => _phase = _Phase.idle);
+        showAppToast(context, theme, 'Backup failed');
+      }
+    }
+  }
+
+  Future<void> _restore(AppTheme theme, AppController app) async {
+    setState(() => _busy = true);
+    try {
+      final blob = await DriveBackup.instance.download();
+      if (blob == null) {
+        if (mounted) showAppToast(context, theme, 'No backup found on Drive');
+        return;
+      }
+      var accounts = app.decodeBackup(blob);
+      if (accounts == null && mounted) {
+        final pin = await askBackupPin(context, theme);
+        if (pin == null) return;
+        accounts = app.decodeBackup(blob, pin: pin);
+      }
+      if (accounts == null) {
+        if (mounted) showAppToast(context, theme, 'Wrong PIN or corrupt backup');
+        return;
+      }
+      final added = await app.mergeAccounts(accounts);
+      if (mounted) showAppToast(context, theme, 'Restored $added ${added == 1 ? 'account' : 'accounts'}');
+    } catch (_) {
+      if (mounted) showAppToast(context, theme, 'Restore failed');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _disconnect(AppTheme theme, AppController app) async {
+    await DriveBackup.instance.disconnect();
+    app.setDriveConnected(false);
+    if (mounted) showAppToast(context, theme, 'Disconnected from Drive');
   }
 
   @override
@@ -50,9 +137,7 @@ class _DriveScreenState extends State<DriveScreen> {
           return Column(
             children: [
               ScreenHeader(theme: theme, title: 'Google Drive backup', onBack: () => Navigator.pop(context)),
-              Expanded(
-                child: app.driveConnected ? _connected(theme, app) : _setup(theme, app),
-              ),
+              Expanded(child: app.driveConnected ? _connected(theme, app) : _setup(theme, app)),
             ],
           );
         },
@@ -60,20 +145,16 @@ class _DriveScreenState extends State<DriveScreen> {
     );
   }
 
-  Widget _setup(AppTheme theme, app) {
+  Widget _setup(AppTheme theme, AppController app) {
     return Padding(
       padding: const EdgeInsets.fromLTRB(18, 20, 18, 40),
       child: Column(
-        crossAxisAlignment: CrossAxisAlignment.center,
         children: [
           const SizedBox(height: 24),
           Container(
             width: 76,
             height: 76,
-            decoration: BoxDecoration(
-              color: theme.accentSoft,
-              borderRadius: BorderRadius.circular(22),
-            ),
+            decoration: BoxDecoration(color: theme.accentSoft, borderRadius: BorderRadius.circular(22)),
             alignment: Alignment.center,
             child: AppIcon('drive', size: 38, color: theme.accent),
           ),
@@ -84,7 +165,7 @@ class _DriveScreenState extends State<DriveScreen> {
           ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: 300),
             child: Text(
-              'Connect your Google account to keep an encrypted copy of your vault. You can restore it on any device.',
+              'Connect your Google account to keep an encrypted copy of your vault in a private app folder. You can restore it on any device.',
               textAlign: TextAlign.center,
               style: theme.ui(size: 14.5, weight: FontWeight.w400, color: theme.muted, height: 1.5),
             ),
@@ -96,18 +177,16 @@ class _DriveScreenState extends State<DriveScreen> {
           PrimaryButton(
             theme: theme,
             icon: 'drive',
-            label: 'Connect Google Drive',
-            onPressed: () {
-              app.setDriveConnected(true);
-              showAppToast(context, theme, 'Google Drive connected');
-            },
+            label: _busy ? 'Connecting…' : 'Connect Google Drive',
+            disabled: _busy,
+            onPressed: () => _connect(theme, app),
           ),
         ],
       ),
     );
   }
 
-  Widget _connected(AppTheme theme, app) {
+  Widget _connected(AppTheme theme, AppController app) {
     return ListView(
       padding: const EdgeInsets.fromLTRB(18, 6, 18, 40),
       children: [
@@ -123,10 +202,7 @@ class _DriveScreenState extends State<DriveScreen> {
               Container(
                 width: 44,
                 height: 44,
-                decoration: BoxDecoration(
-                  color: theme.surface2,
-                  borderRadius: BorderRadius.circular(13),
-                ),
+                decoration: BoxDecoration(color: theme.surface2, borderRadius: BorderRadius.circular(13)),
                 alignment: Alignment.center,
                 child: AppIcon('drive', size: 24, color: theme.accent),
               ),
@@ -136,7 +212,9 @@ class _DriveScreenState extends State<DriveScreen> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text('Connected', style: theme.ui(size: 15, weight: FontWeight.w600)),
-                    Text('alex.rivera@gmail.com',
+                    Text(app.driveEmail ?? 'Google account',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
                         style: theme.ui(size: 13, weight: FontWeight.w400, color: theme.muted)),
                   ],
                 ),
@@ -155,9 +233,9 @@ class _DriveScreenState extends State<DriveScreen> {
           clipBehavior: Clip.antiAlias,
           child: Column(
             children: [
-              MetaRow(theme: theme, label: 'Last backup', value: _last),
+              MetaRow(theme: theme, label: 'Last backup', value: _fmtTime(app.lastBackupAt)),
               MetaRow(theme: theme, label: 'Accounts', value: '${app.count} encrypted'),
-              MetaRow(theme: theme, label: 'Folder', value: '/Apps/Bitanon', last: true),
+              MetaRow(theme: theme, label: 'Folder', value: 'appDataFolder', last: true),
             ],
           ),
         ),
@@ -199,22 +277,19 @@ class _DriveScreenState extends State<DriveScreen> {
                   ? 'Backed up'
                   : 'Back up now',
           disabled: _phase == _Phase.running,
-          onPressed: () => _backup(theme),
+          onPressed: () => _backupNow(theme, app),
         ),
         const SizedBox(height: 11),
         GhostButton(
           theme: theme,
           icon: 'refresh',
-          label: 'Restore from Drive',
-          onPressed: () => showAppToast(context, theme, 'Restoring from Drive…'),
+          label: _busy ? 'Working…' : 'Restore from Drive',
+          onPressed: _busy ? null : () => _restore(theme, app),
         ),
         const SizedBox(height: 16),
         Center(
           child: GestureDetector(
-            onTap: () {
-              app.setDriveConnected(false);
-              showAppToast(context, theme, 'Disconnected from Drive');
-            },
+            onTap: () => _disconnect(theme, app),
             child: Text('Disconnect Google Drive',
                 style: theme.ui(size: 13.5, weight: FontWeight.w600, color: theme.dim)),
           ),
@@ -226,10 +301,7 @@ class _DriveScreenState extends State<DriveScreen> {
   Widget _encryptionNote(AppTheme theme, String text) {
     return Container(
       padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: theme.accentSoft,
-        borderRadius: BorderRadius.circular(16),
-      ),
+      decoration: BoxDecoration(color: theme.accentSoft, borderRadius: BorderRadius.circular(16)),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [

@@ -41,6 +41,30 @@ dependencies:
   # Open the hashlib / cipherlib repo links from Settings → About.
   url_launcher: ^6.3.0
 
+  # Crypto: real RFC 6238 TOTP (HOTP/HMAC/base32) + PBKDF2 key derivation.
+  hashlib: ^2.3.4
+  # Symmetric encryption (AES-GCM) for the local vault + Drive/file backups.
+  cipherlib: ^0.4.0
+
+  # Camera + QR/barcode scanning for add-via-QR and Google Authenticator import.
+  mobile_scanner: ^7.2.0
+  # Biometric (Face ID / fingerprint) unlock.
+  local_auth: ^3.0.1
+
+  # Google Drive backup/restore.
+  google_sign_in: ^7.2.0
+  googleapis: ^16.0.0
+  extension_google_sign_in_as_googleapis_auth: ^3.0.0
+  http: ^1.2.0
+
+  # Encrypted vault file export/import + on-device persistence.
+  path_provider: ^2.1.5
+  shared_preferences: ^2.3.0
+  file_picker: ^11.0.2
+  share_plus: ^12.0.0
+  # Keystore-backed cache of the vault key for biometric unlock.
+  flutter_secure_storage: ^10.3.1
+
 dev_dependencies:
   flutter_test:
     sdk: flutter

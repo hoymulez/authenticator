@@ -1,4 +1,11 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- QR scanning (mobile_scanner) -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+    <!-- Biometric unlock (local_auth) -->
+    <uses-permission android:name="android.permission.USE_BIOMETRIC" />
+    <!-- Google Drive backup -->
+    <uses-permission android:name="android.permission.INTERNET" />
     <application
         android:label="authenticator"
         android:name="${applicationName}"

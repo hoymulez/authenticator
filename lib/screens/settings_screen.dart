@@ -1,11 +1,15 @@
 import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../router.dart';
+import '../services/backup_file.dart';
+import '../services/biometric.dart';
+import '../state/app_controller.dart';
 import '../theme/app_theme.dart';
 import '../widgets/app_icons.dart';
 import '../widgets/app_scope.dart';
 import '../widgets/buttons.dart';
 import '../widgets/gradient_scaffold.dart';
+import '../widgets/pin_prompt.dart';
 import '../widgets/screen_header.dart';
 import '../widgets/segmented.dart';
 import '../widgets/sheet.dart';
@@ -22,9 +26,22 @@ class SettingsScreen extends StatefulWidget {
 }
 
 class _SettingsScreenState extends State<SettingsScreen> {
-  bool _bio = true;
   bool _hide = false;
   String _lock = '30s';
+
+  Future<void> _toggleBiometric(AppController app, AppTheme theme) async {
+    if (app.biometricEnabled) {
+      await app.setBiometricEnabled(false);
+      return;
+    }
+    if (!await Biometric.instance.isAvailable()) {
+      if (mounted) showAppToast(context, theme, 'No biometrics enrolled on this device');
+      return;
+    }
+    if (!await Biometric.instance.authenticate(reason: 'Enable biometric unlock')) return;
+    await app.setBiometricEnabled(true);
+    if (mounted) showAppToast(context, theme, 'Biometric unlock enabled');
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -46,7 +63,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     _group(theme, 'Security', [
                       _row(theme, 'key', 'Change PIN', onTap: _changePin),
                       _row(theme, 'faceid', 'Biometric unlock',
-                          right: AppToggle(theme: theme, value: _bio, onChanged: () => setState(() => _bio = !_bio))),
+                          right: AppToggle(
+                              theme: theme,
+                              value: app.biometricEnabled,
+                              onChanged: () => _toggleBiometric(app, theme))),
                       _row(theme, 'clock', 'Auto-lock', detail: _lock, onTap: () {
                         setState(() {
                           _lock = _lock == '30s'
@@ -84,11 +104,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       icon: 'lock',
                       label: 'Lock vault now',
                       color: AppTheme.danger,
-                      onPressed: () => Navigator.pushAndRemoveUntil(
-                        context,
-                        appRoute(const UnlockScreen()),
-                        (r) => false,
-                      ),
+                      onPressed: () {
+                        app.lock();
+                        Navigator.pushAndRemoveUntil(
+                          context,
+                          appRoute(const UnlockScreen()),
+                          (r) => false,
+                        );
+                      },
                     ),
                     const SizedBox(height: 22),
                     Center(
@@ -187,21 +210,29 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   void _changePin() {
+    String firstPin = '';
     Navigator.push(
       context,
       appRoute(PinScreen(
         mode: PinMode.create,
         onCancel: () => Navigator.pop(context),
-        onComplete: (_) {
+        onComplete: (pin) async {
+          firstPin = pin;
           Navigator.push(
             context,
             appRoute(PinScreen(
               mode: PinMode.confirm,
               onCancel: () => Navigator.pop(context),
-              onComplete: (_) {
-                Navigator.pop(context); // confirm
-                Navigator.pop(context); // create
-                showAppToast(context, AppScope.themeOf(context), 'PIN updated');
+              onComplete: (pin2) async {
+                if (pin2 != firstPin) return false;
+                final app = AppScope.appOf(context);
+                final theme = AppScope.themeOf(context);
+                final nav = Navigator.of(context);
+                await app.changePin(pin2);
+                if (!mounted) return true;
+                nav.pop(); // confirm
+                nav.pop(); // create
+                showAppToast(context, theme, 'PIN updated');
                 return true;
               },
             )),
@@ -259,14 +290,65 @@ class _SettingsScreenState extends State<SettingsScreen> {
             theme: theme,
             icon: 'cloudUp',
             label: 'Export encrypted file',
-            onPressed: () {
+            onPressed: () async {
               Navigator.pop(ctx);
-              showAppToast(context, theme, 'Saved bitanon-vault.enc');
+              await _exportToFile(theme);
+            },
+          ),
+          const SizedBox(height: 11),
+          GhostButton(
+            theme: theme,
+            icon: 'refresh',
+            label: 'Import from file',
+            onPressed: () async {
+              Navigator.pop(ctx);
+              await _importFromFile(theme);
             },
           ),
         ],
       ),
     );
+  }
+
+  Future<void> _exportToFile(AppTheme theme) async {
+    final app = AppScope.appOf(context);
+    final blob = app.exportEncrypted();
+    if (blob == null) return;
+    try {
+      final ok = await BackupFile.exportBlob(blob);
+      if (mounted && ok) showAppToast(context, theme, 'Exported $fileLabel');
+    } catch (_) {
+      if (mounted) showAppToast(context, theme, 'Export failed');
+    }
+  }
+
+  static const fileLabel = 'bitanon-vault.enc';
+
+  Future<void> _importFromFile(AppTheme theme) async {
+    final app = AppScope.appOf(context);
+    final String? blob;
+    try {
+      blob = await BackupFile.importBlob();
+    } catch (_) {
+      if (mounted) showAppToast(context, theme, 'Could not read file');
+      return;
+    }
+    if (blob == null) return;
+
+    // Try the current session key first (same device/PIN), else ask for the PIN.
+    var accounts = app.decodeBackup(blob);
+    if (accounts == null) {
+      if (!mounted) return;
+      final pin = await askBackupPin(context, theme);
+      if (pin == null) return;
+      accounts = app.decodeBackup(blob, pin: pin);
+    }
+    if (accounts == null) {
+      if (mounted) showAppToast(context, theme, 'Wrong PIN or corrupt file');
+      return;
+    }
+    final added = await app.mergeAccounts(accounts);
+    if (mounted) showAppToast(context, theme, 'Imported $added ${added == 1 ? 'account' : 'accounts'}');
   }
 
   void _showAppearance(AppTheme theme) {

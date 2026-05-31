@@ -4,6 +4,12 @@
 <dict>
 	<key>CADisableMinimumFrameDurationOnPhone</key>
 	<true/>
+	<!-- QR scanning (mobile_scanner) -->
+	<key>NSCameraUsageDescription</key>
+	<string>Scan QR codes to add authenticator accounts.</string>
+	<!-- Biometric unlock (local_auth) -->
+	<key>NSFaceIDUsageDescription</key>
+	<string>Unlock your vault with Face ID.</string>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>

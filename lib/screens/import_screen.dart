@@ -1,13 +1,14 @@
-import 'dart:async';
 import 'package:flutter/material.dart';
-import '../data/seed_data.dart';
+import '../models/account.dart';
+import '../services/ga_migration.dart';
+import '../services/otpauth.dart';
 import '../theme/app_theme.dart';
 import '../widgets/app_icons.dart';
 import '../widgets/app_scope.dart';
 import '../widgets/brand_tile.dart';
 import '../widgets/buttons.dart';
-import '../widgets/camera_view.dart';
 import '../widgets/gradient_scaffold.dart';
+import '../widgets/scanner_view.dart';
 import '../widgets/screen_header.dart';
 import '../widgets/toast.dart';
 
@@ -19,32 +20,37 @@ class ImportScreen extends StatefulWidget {
 }
 
 class _ImportScreenState extends State<ImportScreen> {
+  List<Account> _found = [];
+  final Set<String> _sel = {};
   bool _selectStep = false;
-  final Set<String> _sel = {...kImportAccounts.map((a) => a.id)};
-  Timer? _timer;
 
-  @override
-  void initState() {
-    super.initState();
-    _timer = Timer(const Duration(milliseconds: 2400), () {
-      if (mounted) setState(() => _selectStep = true);
-    });
+  void _onCode(String raw) {
+    if (_selectStep) return;
+    var accounts = GoogleAuthMigration.parseUri(raw);
+    if (accounts.isEmpty) {
+      final single = OtpAuth.parse(raw);
+      if (single != null) accounts = [single];
+    }
+    if (accounts.isNotEmpty) {
+      setState(() {
+        _found = accounts;
+        _sel
+          ..clear()
+          ..addAll(accounts.map((a) => a.id));
+        _selectStep = true;
+      });
+    }
   }
 
-  @override
-  void dispose() {
-    _timer?.cancel();
-    super.dispose();
-  }
+  bool get _allOn => _sel.length == _found.length;
 
-  bool get _allOn => _sel.length == kImportAccounts.length;
-
-  void _import(AppTheme theme) {
+  Future<void> _import(AppTheme theme) async {
     final app = AppScope.appOf(context);
-    final items = kImportAccounts.where((a) => _sel.contains(a.id)).toList();
-    app.importAccounts(items);
+    final items = _found.where((a) => _sel.contains(a.id)).toList();
+    final added = await app.importAccounts(items);
+    if (!mounted) return;
     Navigator.popUntil(context, (r) => r.isFirst);
-    showAppToast(context, theme, 'Imported ${items.length} accounts');
+    showAppToast(context, theme, 'Imported $added ${added == 1 ? 'account' : 'accounts'}');
   }
 
   @override
@@ -60,9 +66,7 @@ class _ImportScreenState extends State<ImportScreen> {
             subtitle: 'From Google Authenticator',
             onBack: () => Navigator.pop(context),
           ),
-          Expanded(
-            child: _selectStep ? _select(theme) : _scan(theme),
-          ),
+          Expanded(child: _selectStep ? _select(theme) : _scan(theme)),
         ],
       ),
     );
@@ -116,7 +120,7 @@ class _ImportScreenState extends State<ImportScreen> {
           ),
         ),
         const SizedBox(height: 16),
-        CameraView(theme: theme, scanning: true),
+        ScannerView(theme: theme, onCode: _onCode),
         const SizedBox(height: 16),
         Text('Looking for an export QR code…',
             textAlign: TextAlign.center,
@@ -134,7 +138,7 @@ class _ImportScreenState extends State<ImportScreen> {
           child: Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Text('${kImportAccounts.length} accounts found',
+              Text('${_found.length} ${_found.length == 1 ? 'account' : 'accounts'} found',
                   style: theme.ui(size: 14, weight: FontWeight.w600)),
               GestureDetector(
                 onTap: () => setState(() {
@@ -143,7 +147,7 @@ class _ImportScreenState extends State<ImportScreen> {
                   } else {
                     _sel
                       ..clear()
-                      ..addAll(kImportAccounts.map((a) => a.id));
+                      ..addAll(_found.map((a) => a.id));
                   }
                 }),
                 child: Text(_allOn ? 'Deselect all' : 'Select all',
@@ -152,7 +156,7 @@ class _ImportScreenState extends State<ImportScreen> {
             ],
           ),
         ),
-        ...kImportAccounts.map((a) {
+        ..._found.map((a) {
           final on = _sel.contains(a.id);
           return Padding(
             padding: const EdgeInsets.only(bottom: 9),
